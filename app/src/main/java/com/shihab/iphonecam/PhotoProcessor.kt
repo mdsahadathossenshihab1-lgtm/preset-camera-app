@@ -47,7 +47,16 @@ fun Context.hasMediaPermission(): Boolean =
 
 /** Decode + EXIF-rotate + grade a captured JPEG file. Caller recycles the result. */
 suspend fun processCapturedFile(file: File): Bitmap {
+    // Downsample very large sensors to a ~12 MP working size so the
+    // preset stays fast (the watcher path already caps at ~16 MP).
+    // Without this, a 50/108 MP capture makes grading take many seconds.
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    val totalPixels = bounds.outWidth.toLong() * bounds.outHeight.toLong()
+    var sample = 1
+    while (totalPixels / (sample.toLong() * sample) > 12_000_000L) sample *= 2
     val opts = BitmapFactory.Options().apply {
+        inSampleSize = sample
         inPreferredConfig = Bitmap.Config.ARGB_8888
     }
     var bitmap = BitmapFactory.decodeFile(file.absolutePath, opts)

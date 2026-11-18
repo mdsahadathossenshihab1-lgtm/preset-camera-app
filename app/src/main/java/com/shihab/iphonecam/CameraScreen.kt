@@ -2,6 +2,7 @@ package com.shihab.iphonecam
 
 import android.Manifest
 import android.graphics.Bitmap
+import android.media.MediaActionSound
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -80,6 +81,11 @@ fun CameraScreen(onOpenWatcherSettings: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var thumbnail by remember { mutableStateOf<Bitmap?>(null) }
 
+    // Shutter click sound: CameraX does not play one by itself.
+    val shutterSound = remember {
+        MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) }
+    }
+
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> hasCameraPermission = granted }
@@ -114,7 +120,7 @@ fun CameraScreen(onOpenWatcherSettings: () -> Unit) {
             applyZoom(controller, 1.5f)
         }
     }
-    DisposableEffect(Unit) { onDispose { controller.unbind() } }
+    DisposableEffect(Unit) { onDispose { controller.unbind(); shutterSound.release() } }
 
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
 
@@ -125,6 +131,7 @@ fun CameraScreen(onOpenWatcherSettings: () -> Unit) {
             return
         }
         busy = true
+        shutterSound.play(MediaActionSound.SHUTTER_CLICK)
         val file = File(context.cacheDir, "capture_${System.currentTimeMillis()}.jpg")
         val options = ImageCapture.OutputFileOptions.Builder(file).build()
         controller.takePicture(
@@ -132,6 +139,9 @@ fun CameraScreen(onOpenWatcherSettings: () -> Unit) {
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    // Free the shutter at once: grading runs in the
+                    // background, so the next shot is not blocked by it.
+                    scope.launch(Dispatchers.Main) { busy = false }
                     scope.launch(Dispatchers.Default) {
                         try {
                             // Grade on-device, then save ONLY the graded photo.
@@ -140,13 +150,11 @@ fun CameraScreen(onOpenWatcherSettings: () -> Unit) {
                             saveToGallery(context, graded)
                             graded.recycle()
                             withContext(Dispatchers.Main) {
-                                busy = false
                                 toast("Saved to gallery")
                                 thumbnail = loadLatestThumbnail(context)
                             }
                         } catch (e: Exception) {
                             withContext(Dispatchers.Main) {
-                                busy = false
                                 toast("Could not save photo")
                             }
                         } finally {
