@@ -9,25 +9,29 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Faithful port of Shihab's photo preset (v6 WHITE) from
- * workspace/photo-presets/shihab-preset.py (v6, grade_white_v6.py).
+ * Faithful port of Shihab's photo preset (v8 ULTRA CLEAR) from
+ * workspace/photo-presets/shihab-preset.py (v8, grade_v8.py).
  *
  * Recipe, in order:
  *  1. Per-channel percentile stretch, 1st-99th percentile (dehaze).
- *  2. S-curve with slightly lifted blacks. LUT points:
- *     (0, 0.03), (0.25, 0.21), (0.5, 0.5), (0.75, 0.79), (1, 0.99).
+ *  2. S-curve. LUT points:
+ *     (0, 0.01), (0.25, 0.18), (0.5, 0.5), (0.75, 0.82), (1, 1.0).
  *  3. Channel gains: R x0.99, G x1.0, B x1.02 (white feel, NO yellow).
  *  4. Extra saturation only in greens: HSV hue band centred on green
  *     (hue 80 on PIL's 0-255 scale, triangular mask width 35), +8%.
- *  5. Saturation x1.15, brightness x1.07, contrast x1.08 (around the
+ *  5. Saturation x1.18, brightness x1.06, contrast x1.12 (around the
  *     image mean luminance, like PIL ImageEnhance).
- *  6. Clarity: wide local-contrast pass (box blur radius 8, 2 passes,
- *     ~= PIL UnsharpMask(radius=8)), 30%, threshold 2.
- *  7. Unsharp mask, radius 2, 90%, threshold 2. The blur is a separable
+ *  6. Clarity: wide local-contrast pass (box blur radius 10, 2 passes,
+ *     ~= PIL UnsharpMask(radius=10)), 35%, threshold 2.
+ *  7. Unsharp mask, radius 2, 100%, threshold 2. The blur is a separable
  *     binomial kernel [1,4,6,4,1]/16 applied twice per direction, which
  *     approximates PIL's GaussianBlur(radius=2); the colour steps above
  *     are exact ports, not approximations.
  *  8. Gentle vignette: corners darkened up to 7%.
+ *
+ * v7 lesson: clarity 50% + unsharp 130% + an extra radius-1 pass made
+ * the face crunchy and the eyes harsh. v8 backs off to 35% / 100% and
+ * no extra pass: clear with no haze, but the skin stays clean.
  *
  * Runs on Dispatchers.Default with row-chunked parallelism. Full
  * resolution is kept throughout.
@@ -35,7 +39,7 @@ import kotlin.math.min
 object Preset {
 
     private val curveX = floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f)
-    private val curveY = floatArrayOf(0.03f, 0.21f, 0.5f, 0.79f, 0.99f)
+    private val curveY = floatArrayOf(0.01f, 0.18f, 0.5f, 0.82f, 1.0f)
 
     suspend fun applyPreset(src: Bitmap): Bitmap = coroutineScope {
         val w = src.width
@@ -106,16 +110,16 @@ object Preset {
                             }
                         }
 
-                        // 5a. Saturation x1.15 around luma (PIL ImageEnhance.Color).
+                        // 5a. Saturation x1.18 around luma (PIL ImageEnhance.Color).
                         val luma = 0.299f * r + 0.587f * g + 0.114f * b
-                        r = (luma + (r - luma) * 1.15f).coerceIn(0f, 255f)
-                        g = (luma + (g - luma) * 1.15f).coerceIn(0f, 255f)
-                        b = (luma + (b - luma) * 1.15f).coerceIn(0f, 255f)
+                        r = (luma + (r - luma) * 1.18f).coerceIn(0f, 255f)
+                        g = (luma + (g - luma) * 1.18f).coerceIn(0f, 255f)
+                        b = (luma + (b - luma) * 1.18f).coerceIn(0f, 255f)
 
-                        // 5b. Brightness x1.07 (PIL ImageEnhance.Brightness).
-                        r = (r * 1.07f).coerceIn(0f, 255f)
-                        g = (g * 1.07f).coerceIn(0f, 255f)
-                        b = (b * 1.07f).coerceIn(0f, 255f)
+                        // 5b. Brightness x1.06 (PIL ImageEnhance.Brightness).
+                        r = (r * 1.06f).coerceIn(0f, 255f)
+                        g = (g * 1.06f).coerceIn(0f, 255f)
+                        b = (b * 1.06f).coerceIn(0f, 255f)
 
                         sum += 0.299 * r + 0.587 * g + 0.114 * b
                         pixels[idx] = (0xFF shl 24) or
@@ -128,7 +132,7 @@ object Preset {
         }.awaitAll().sum()
         val mean = (lumaSums / total).toFloat()
 
-        // 6. Contrast x1.08 around the mean luminance (PIL ImageEnhance.Contrast).
+        // 6. Contrast x1.12 around the mean luminance (PIL ImageEnhance.Contrast).
         chunks.map { (y0, y1) ->
             async {
                 for (y in y0 until y1) {
@@ -136,9 +140,9 @@ object Preset {
                     val end = idx + w
                     while (idx < end) {
                         val px = pixels[idx]
-                        val r = (((px shr 16) and 0xFF) - mean) * 1.08f + mean
-                        val g = (((px shr 8) and 0xFF) - mean) * 1.08f + mean
-                        val b = ((px and 0xFF) - mean) * 1.08f + mean
+                        val r = (((px shr 16) and 0xFF) - mean) * 1.12f + mean
+                        val g = (((px shr 8) and 0xFF) - mean) * 1.12f + mean
+                        val b = ((px and 0xFF) - mean) * 1.12f + mean
                         pixels[idx] = (0xFF shl 24) or
                             (r.toInt().coerceIn(0, 255) shl 16) or
                             (g.toInt().coerceIn(0, 255) shl 8) or
@@ -149,11 +153,11 @@ object Preset {
             }
         }.awaitAll()
 
-        // 6. Clarity (wide local contrast, 30%, threshold 2).
+        // 6. Clarity (wide local contrast, 35%, threshold 2).
         clarity(pixels, w, h)
 
-        // 7. Unsharp mask (radius 2, 90%, threshold 2).
-        unsharp(pixels, w, h, 0.9f)
+        // 7. Unsharp mask (radius 2, 100%, threshold 2).
+        unsharp(pixels, w, h, 1.0f)
 
         // 8. Gentle vignette: corners darkened up to 7%.
         vignette(pixels, w, h)
@@ -247,18 +251,18 @@ object Preset {
     }
 
     /**
-     * Clarity: PIL UnsharpMask(radius=8, percent=30, threshold=2).
-     * A wide blur (separable box blur, radius 8, 2 passes ~= Gaussian
-     * sigma 7) gives the local average; boosting the difference adds
+     * Clarity: PIL UnsharpMask(radius=10, percent=35, threshold=2).
+     * A wide blur (separable box blur, radius 10, 2 passes ~= Gaussian
+     * sigma 8.5) gives the local average; boosting the difference adds
      * local contrast, which is what makes a hazy face turn clear.
      */
     private suspend fun clarity(pixels: IntArray, w: Int, h: Int) = coroutineScope {
         val tmp = IntArray(pixels.size)
         val blur = IntArray(pixels.size)
-        boxBlur(pixels, tmp, w, h, radius = 8, horizontal = true)
-        boxBlur(tmp, blur, w, h, radius = 8, horizontal = false)
-        boxBlur(blur, tmp, w, h, radius = 8, horizontal = true)
-        boxBlur(tmp, blur, w, h, radius = 8, horizontal = false)
+        boxBlur(pixels, tmp, w, h, radius = 10, horizontal = true)
+        boxBlur(tmp, blur, w, h, radius = 10, horizontal = false)
+        boxBlur(blur, tmp, w, h, radius = 10, horizontal = true)
+        boxBlur(tmp, blur, w, h, radius = 10, horizontal = false)
 
         chunkRanges(h).map { (y0, y1) ->
             async {
@@ -268,9 +272,9 @@ object Preset {
                     while (idx < end) {
                         val o = pixels[idx]
                         val b = blur[idx]
-                        val r = sharpenChannel((o shr 16) and 0xFF, (b shr 16) and 0xFF, 0.3f)
-                        val g = sharpenChannel((o shr 8) and 0xFF, (b shr 8) and 0xFF, 0.3f)
-                        val bl = sharpenChannel(o and 0xFF, b and 0xFF, 0.3f)
+                        val r = sharpenChannel((o shr 16) and 0xFF, (b shr 16) and 0xFF, 0.35f)
+                        val g = sharpenChannel((o shr 8) and 0xFF, (b shr 8) and 0xFF, 0.35f)
+                        val bl = sharpenChannel(o and 0xFF, b and 0xFF, 0.35f)
                         pixels[idx] = (0xFF shl 24) or (r shl 16) or (g shl 8) or bl
                         idx++
                     }
